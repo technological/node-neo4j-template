@@ -2,7 +2,11 @@
 // User model logic.
 
 var neo4j = require('neo4j');
-var db = new neo4j.GraphDatabase(process.env.NEO4J_URL || 'http://localhost:7474');
+var db = new neo4j.GraphDatabase(
+    process.env['NEO4J_URL'] ||
+    process.env['GRAPHENEDB_URL'] ||
+    'http://localhost:7474'
+);
 
 // constants:
 
@@ -44,7 +48,7 @@ Object.defineProperty(User.prototype, 'name', {
 User.prototype._getFollowingRel = function (other, callback) {
     var query = [
         'START user=node({userId}), other=node({otherId})',
-        'MATCH (user) -[rel?:FOLLOWS_REL]-> (other)',
+        'OPTIONAL MATCH (user) -[rel:FOLLOWS_REL]-> (other)',
         'RETURN rel'
     ].join('\n')
         .replace('FOLLOWS_REL', FOLLOWS_REL);
@@ -97,7 +101,7 @@ User.prototype.getFollowingAndOthers = function (callback) {
     // query all users and whether we follow each one or not:
     var query = [
         'START user=node({userId}), other=node:INDEX_NAME(INDEX_KEY="INDEX_VAL")',
-        'MATCH (user) -[rel?:FOLLOWS_REL]-> (other)',
+        'OPTIONAL MATCH (user) -[rel:FOLLOWS_REL]-> (other)',
         'RETURN other, COUNT(rel)'  // COUNT(rel) is a hack for 1 or 0
     ].join('\n')
         .replace('INDEX_NAME', INDEX_NAME)
@@ -144,10 +148,23 @@ User.get = function (id, callback) {
 
 User.getAll = function (callback) {
     db.getIndexedNodes(INDEX_NAME, INDEX_KEY, INDEX_VAL, function (err, nodes) {
-        // if (err) return callback(err);
-        // XXX FIXME the index might not exist in the beginning, so special-case
-        // this error detection. warning: this is super brittle!!
-        if (err) return callback(null, []);
+        if (err) {
+            // HACK our node index doesn't exist by default on fresh dbs, so
+            // check to see if that's the reason for this error.
+            // it'd be better to have an explicit way to create this index
+            // before running the app, e.g. an "initialize db" script.
+            //
+            // HACK it's also brittle to be relying on the error's message
+            // property. it'd be better if node-neo4j added more semantic
+            // properties to errors, e.g. neo4jException or statusCode.
+            // https://github.com/thingdom/node-neo4j/issues/73
+            //
+            if (err.message.match(/Neo4j NotFoundException/i)) {
+                return callback(null, []);
+            } else {
+                return callback(err);
+            }
+        }
         var users = nodes.map(function (node) {
             return new User(node);
         });
